@@ -1127,6 +1127,7 @@ extern int num_processors;
 extern int hw_errors;
 extern bool use_syslog;
 extern bool opt_quiet;
+extern bool opt_extranonce_subscribe;
 extern struct thr_info *control_thr;
 extern struct thr_info **mining_thr;
 extern double total_secs;
@@ -1186,6 +1187,7 @@ struct stratum_work {
 struct pool {
 	int pool_no;
 	int prio;
+	bool extranonce_subscribe;
 	int64_t accepted, rejected;
 	int seq_rejects;
 	int seq_getfails;
@@ -1484,6 +1486,7 @@ extern void logwin_update(void);
 extern bool pool_tclear(struct pool *pool, bool *var);
 extern void stratum_resumed(struct pool *pool);
 extern void pool_died(struct pool *pool);
+extern void pool_failed(struct pool *pool);
 extern struct thread_q *tq_new(void);
 extern void tq_free(struct thread_q *tq);
 extern bool tq_push(struct thread_q *tq, void *data);

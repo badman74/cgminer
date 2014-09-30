@@ -676,6 +676,7 @@ struct pool *add_pool(void)
 	pool->rpc_proxy = NULL;
 	pool->quota = 1;
 	adjust_quota_gcd();
+  pool->extranonce_subscribe = false;
 
 	return pool;
 }
@@ -948,6 +949,16 @@ static char *set_userpass(const char *arg)
 	pool->rpc_pass = strtok(NULL, ":");
 	if (!pool->rpc_pass)
 		pool->rpc_pass = strdup("");
+
+	return NULL;
+}
+
+static char *set_extranonce_subscribe(char *arg)
+{
+	struct pool *pool;
+
+	applog(LOG_DEBUG, "enable extranonce subscribe on %d", pool->pool_no);
+	opt_set_invbool(&pool->extranonce_subscribe);
 
 	return NULL;
 }
@@ -1441,6 +1452,9 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITHOUT_ARG("--no-submit-stale",
 			opt_set_invbool, &opt_submit_stale,
 		        "Don't submit shares if they are detected as stale"),
+  OPT_WITHOUT_ARG("--extranonce-subscribe",
+			set_extranonce_subscribe, NULL,
+			"Enable 'extranonce' stratum subscribe"),
 #ifdef USE_BITFURY
 	OPT_WITH_ARG("--osm-led-mode",
 		     set_int_0_to_4, opt_show_intval, &opt_osm_led_mode,
@@ -4278,6 +4292,16 @@ struct work *copy_work_noffset(struct work *base_work, int noffset)
 	return work;
 }
 
+void pool_failed(struct pool *pool)
+{
+	if (!pool_tset(pool, &pool->idle)) {
+		cgtime(&pool->tv_idle);
+		if (pool == current_pool()) {
+			switch_pools(NULL);
+		}
+	}
+}
+
 void pool_died(struct pool *pool)
 {
 	if (!pool_tset(pool, &pool->idle)) {
@@ -5011,6 +5035,8 @@ void write_config(FILE *fcfg)
 				pool->rpc_proxy ? "|" : "",
 				json_escape(pool->rpc_url));
 		}
+		if (pool->extranonce_subscribe)
+			fputs("\n\t\t\"extranonce-subscribe\" : true,", fcfg);
 		fprintf(fcfg, "\n\t\t\"user\" : \"%s\",", json_escape(pool->rpc_user));
 		fprintf(fcfg, "\n\t\t\"pass\" : \"%s\"\n\t}", json_escape(pool->rpc_pass));
 		}
@@ -5928,7 +5954,7 @@ static void hashmeter(int thr_id, uint64_t hashes_done)
 	decay_time(&rolling1, hashes_done, tv_tdiff, 60.0);
 	decay_time(&rolling5, hashes_done, tv_tdiff, 300.0);
 	decay_time(&rolling15, hashes_done, tv_tdiff, 900.0);
-	global_hashrate = llround(total_rolling) * 1000000;
+	global_hashrate = lround(total_rolling) * 1000000;
 	total_secs = tdiff(&total_tv_end, &total_tv_start);
 	if (showlog) {
 		char displayed_hashes[16], displayed_rolling[16];
@@ -6015,6 +6041,15 @@ static bool parse_stratum_response(struct pool *pool, char *s)
 	}
 
 	id = json_integer_value(id_val);
+
+	if (err_val && !json_is_null(err_val))  {
+		char *ss;
+		ss = (char *)json_string_value(json_array_get(err_val, 1));
+		if (set_extranonce_subscribe && strcmp(ss, "Method 'subscribe' not found for service 'mining.extranonce'") == 0) {
+			applog(LOG_INFO, "Cannot subscribe to mining.extranonce on pool %d", pool->pool_no);
+			goto out;
+		}
+	}
 
 	mutex_lock(&sshare_lock);
 	HASH_FIND_INT(stratum_shares, &id, sshare);
@@ -6223,6 +6258,7 @@ static void *stratum_rthread(void *userdata)
 
 			wait_lpcurrent(pool);
 			while (!restart_stratum(pool)) {
+        pool_failed(pool);
 				if (pool->removed)
 					goto out;
 				cgsleep_ms(30000);
@@ -6258,6 +6294,7 @@ static void *stratum_rthread(void *userdata)
 				restart_threads();
 
 			while (!restart_stratum(pool)) {
+        pool_failed(pool);
 				if (pool->removed)
 					goto out;
 				cgsleep_ms(30000);
@@ -6546,7 +6583,7 @@ retry_stratum:
 		bool init = pool_tset(pool, &pool->stratum_init);
 
 		if (!init) {
-			bool ret = initiate_stratum(pool) && auth_stratum(pool);
+			bool ret = initiate_stratum(pool) && (!pool->extranonce_subscribe || subscribe_extranonce(pool)) && auth_stratum(pool);
 
 			if (ret)
 				init_stratum_threads(pool);
